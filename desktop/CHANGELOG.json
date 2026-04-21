@@ -1,9 +1,14 @@
 {
-  "unreleased": [
-    "Dashboard Tasks/Goals cards now shrink to fit content instead of stretching to fill the screen",
-    "Usage-based overage on Operator plan \u2014 chat past 500 questions is billed as real provider cost + 15% at end of cycle"
-  ],
+  "unreleased": [],
   "releases": [
+    {
+      "version": "0.11.348",
+      "date": "2026-04-21",
+      "changes": [
+        "Dashboard Tasks/Goals cards now shrink to fit content instead of stretching to fill the screen",
+        "Usage-based overage on Operator plan \u2014 chat past 500 questions is billed as real provider cost + 15% at end of cycle"
+      ]
+    },
     {
       "version": "0.11.343",
       "date": "2026-04-20",
