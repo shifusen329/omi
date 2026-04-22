@@ -59,4 +59,28 @@ final class ProdEnv implements EnvFields {
   @override
   @EnviedField(varName: 'STAGING_API_URL', obfuscate: true)
   final String? stagingApiUrl = _ProdEnv.stagingApiUrl;
+
+  @override
+  @EnviedField(varName: 'AUTH_PROVIDER', obfuscate: false, defaultValue: 'firebase')
+  final String? authProvider = _ProdEnv.authProvider;
+
+  @override
+  @EnviedField(varName: 'OIDC_ISSUER', obfuscate: false, defaultValue: '')
+  final String? oidcIssuer = _ProdEnv.oidcIssuer;
+
+  @override
+  @EnviedField(varName: 'OIDC_CLIENT_ID', obfuscate: false, defaultValue: '')
+  final String? oidcClientId = _ProdEnv.oidcClientId;
+
+  @override
+  @EnviedField(varName: 'OIDC_DISCOVERY_URL', obfuscate: false, defaultValue: '')
+  final String? oidcDiscoveryUrl = _ProdEnv.oidcDiscoveryUrl;
+
+  @override
+  @EnviedField(varName: 'OIDC_REDIRECT_URI', obfuscate: false, defaultValue: '')
+  final String? oidcRedirectUri = _ProdEnv.oidcRedirectUri;
+
+  @override
+  @EnviedField(varName: 'OIDC_SCOPES', obfuscate: false, defaultValue: 'openid email profile')
+  final String? oidcScopes = _ProdEnv.oidcScopes;
 }

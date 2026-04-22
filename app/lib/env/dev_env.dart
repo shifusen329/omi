@@ -59,4 +59,28 @@ final class DevEnv implements EnvFields {
   @override
   @EnviedField(varName: 'STAGING_API_URL', obfuscate: true)
   final String? stagingApiUrl = _DevEnv.stagingApiUrl;
+
+  @override
+  @EnviedField(varName: 'AUTH_PROVIDER', obfuscate: false, defaultValue: 'firebase')
+  final String? authProvider = _DevEnv.authProvider;
+
+  @override
+  @EnviedField(varName: 'OIDC_ISSUER', obfuscate: false, defaultValue: '')
+  final String? oidcIssuer = _DevEnv.oidcIssuer;
+
+  @override
+  @EnviedField(varName: 'OIDC_CLIENT_ID', obfuscate: false, defaultValue: '')
+  final String? oidcClientId = _DevEnv.oidcClientId;
+
+  @override
+  @EnviedField(varName: 'OIDC_DISCOVERY_URL', obfuscate: false, defaultValue: '')
+  final String? oidcDiscoveryUrl = _DevEnv.oidcDiscoveryUrl;
+
+  @override
+  @EnviedField(varName: 'OIDC_REDIRECT_URI', obfuscate: false, defaultValue: '')
+  final String? oidcRedirectUri = _DevEnv.oidcRedirectUri;
+
+  @override
+  @EnviedField(varName: 'OIDC_SCOPES', obfuscate: false, defaultValue: 'openid email profile')
+  final String? oidcScopes = _DevEnv.oidcScopes;
 }

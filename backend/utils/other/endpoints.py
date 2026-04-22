@@ -3,6 +3,7 @@ import json
 import os
 import time
 
+import jwt as _pyjwt
 from fastapi import Depends, Header, HTTPException, WebSocketException
 from fastapi import Request
 from starlette.websockets import WebSocket
@@ -14,6 +15,7 @@ import redis as redis_pkg
 from database.redis_db import check_rate_limit, try_acquire_listen_lock
 from database.users import record_user_platform
 from utils.byok import extract_byok_from_websocket, set_byok_keys, validate_byok_request, validate_byok_websocket
+from utils.other import oidc_auth
 from utils.rate_limit_config import RATE_POLICIES, RATE_LIMIT_SHADOW, get_effective_limit
 
 logger = logging.getLogger(__name__)
@@ -26,21 +28,38 @@ def get_user(uid: str):
 
 def verify_token(token: str) -> str:
     """
-    Verify a Firebase token or ADMIN_KEY and return the uid.
+    Verify a bearer token and return the uid.
+
+    When AUTH_PROVIDER=oidc, validates as an RS256 OIDC ID token against
+    the configured issuer's JWKS. Otherwise, falls back to Firebase ID
+    token verification. ADMIN_KEY bypass works in both modes.
 
     Args:
-        token: The token to verify (Firebase ID token or ADMIN_KEY format)
+        token: The token to verify.
 
     Returns:
-        The user's uid
+        The user's uid.
 
     Raises:
-        InvalidIdTokenError: If the token is invalid
+        InvalidIdTokenError: If the token is invalid. (OIDC PyJWT errors
+            are re-raised as InvalidIdTokenError so downstream catchers
+            keep working unchanged.)
     """
-    # Check for ADMIN_KEY format
+    # ADMIN_KEY bypass stays on both paths — useful for local dev / scripts.
     admin_key = os.getenv('ADMIN_KEY')
     if admin_key and token.startswith(admin_key):
         return token[len(admin_key) :]
+
+    if oidc_auth.is_enabled():
+        try:
+            return oidc_auth.verify_token(token)
+        except oidc_auth.OIDCConfigError as e:
+            logger.error("OIDC misconfigured: %s", e)
+            raise InvalidIdTokenError(f'OIDC misconfigured: {e}') from e
+        except _pyjwt.PyJWTError as e:
+            if os.getenv('LOCAL_DEVELOPMENT') == 'true':
+                return '123'
+            raise InvalidIdTokenError(f'OIDC token verification failed: {e}') from e
 
     # Verify Firebase token
     try:

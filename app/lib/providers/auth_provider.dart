@@ -95,7 +95,9 @@ class AuthenticationProvider extends BaseProvider {
         } else {
           credential = await AuthService.instance.authenticateWithProvider('google');
         }
-        if (credential != null && isSignedIn()) {
+        // OIDC has no Firebase UserCredential — success is detected via isSignedIn().
+        final ok = Env.isOidcAuth ? isSignedIn() : (credential != null && isSignedIn());
+        if (ok) {
           _signIn(onSignIn);
         } else {
           AppSnackbar.showSnackbarError(
@@ -126,7 +128,8 @@ class AuthenticationProvider extends BaseProvider {
         } else {
           credential = await AuthService.instance.authenticateWithProvider('apple');
         }
-        if (credential != null && isSignedIn()) {
+        final ok = Env.isOidcAuth ? isSignedIn() : (credential != null && isSignedIn());
+        if (ok) {
           _signIn(onSignIn);
         } else {
           AppSnackbar.showSnackbarError(

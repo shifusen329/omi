@@ -168,6 +168,18 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="omi" />
             </intent-filter>
+            <!-- Self-host OIDC redirect (flutter_appauth). Reuses the existing
+                 com.friend.ios scheme that's already wired for Apple OAuth so
+                 we don't have to register a new package identifier. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="com.friend.ios"
+                    android:host="oauth"
+                    android:path="/callback" />
+            </intent-filter>
         </activity>
 
         <!-- Don't delete the meta-data below.

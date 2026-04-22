@@ -2088,7 +2088,7 @@ abstract class AppLocalizations {
   /// No description provided for @vocabularyHint.
   ///
   /// In en, this message translates to:
-  /// **'Omi, Callie, OpenAI'**
+  /// **'Omi, Callie'**
   String get vocabularyHint;
 
   /// Title for device connection page
@@ -8322,7 +8322,7 @@ abstract class AppLocalizations {
   /// Description of secure encryption explaining how data is protected
   ///
   /// In en, this message translates to:
-  /// **'Your data is encrypted with a key unique to you on our servers, hosted on Google Cloud. This means your raw content is inaccessible to anyone, including Omi staff or Google, directly from the database.'**
+  /// **'Your data is encrypted with a key unique to you on our self-hosted servers. This means your raw content is inaccessible to anyone, including Omi staff, directly from the database.'**
   String get secureEncryptionDescription;
 
   /// Title for E2EE card
@@ -9666,7 +9666,7 @@ abstract class AppLocalizations {
   /// Consent message explaining how user data will be stored and used
   ///
   /// In en, this message translates to:
-  /// **'By continuing, your conversations, recordings, and personal information will be securely stored on our servers. Your audio recordings and transcripts are processed by third-party AI services (including Deepgram for transcription and OpenAI for analysis) to provide you with AI-powered insights and enable all app features.'**
+  /// **'By continuing, your conversations, recordings, and personal information will be securely stored on our self-hosted servers. Your audio recordings and transcripts are processed locally to provide you with AI-powered insights and enable all app features.'**
   String get consentDataMessage;
 
   /// Empty state message shown when there are no tasks, with instruction to tap + button

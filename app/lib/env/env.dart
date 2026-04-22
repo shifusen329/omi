@@ -75,6 +75,41 @@ abstract class Env {
   static bool get useWebAuth => _instance.useWebAuth ?? false;
 
   static bool get useAuthCustomToken => _instance.useAuthCustomToken ?? false;
+
+  // ----- Self-host OIDC (active when authProvider == 'oidc') -----
+
+  /// 'firebase' (default) or 'oidc'. When 'oidc', the app authenticates
+  /// against the configured OIDC issuer instead of Firebase Auth.
+  static String get authProvider => (_instance.authProvider ?? 'firebase').toLowerCase();
+
+  /// True when the OIDC self-host auth path is selected.
+  static bool get isOidcAuth => authProvider == 'oidc';
+
+  static String? get oidcIssuer => _instance.oidcIssuer;
+
+  static String? get oidcClientId => _instance.oidcClientId;
+
+  /// Discovery URL — defaults to {issuer}/.well-known/openid-configuration.
+  static String? get oidcDiscoveryUrl {
+    final explicit = _instance.oidcDiscoveryUrl;
+    if (explicit != null && explicit.isNotEmpty) return explicit;
+    final issuer = oidcIssuer;
+    if (issuer == null || issuer.isEmpty) return null;
+    final trimmed = issuer.endsWith('/') ? issuer.substring(0, issuer.length - 1) : issuer;
+    return '$trimmed/.well-known/openid-configuration';
+  }
+
+  /// Custom-scheme deep link the AppAuth flow redirects back to.
+  /// Reuses the existing com.friend.ios scheme that's already wired up
+  /// for Apple OAuth callbacks.
+  static String get oidcRedirectUri =>
+      _instance.oidcRedirectUri ?? 'com.friend.ios://oauth/callback';
+
+  static List<String> get oidcScopes =>
+      (_instance.oidcScopes ?? 'openid email profile')
+          .split(RegExp(r'\s+'))
+          .where((s) => s.isNotEmpty)
+          .toList();
 }
 
 abstract class EnvFields {
@@ -103,4 +138,17 @@ abstract class EnvFields {
   bool? get useAuthCustomToken;
 
   String? get stagingApiUrl;
+
+  // OIDC self-host auth (optional; null when authProvider != 'oidc').
+  String? get authProvider;
+
+  String? get oidcIssuer;
+
+  String? get oidcClientId;
+
+  String? get oidcDiscoveryUrl;
+
+  String? get oidcRedirectUri;
+
+  String? get oidcScopes;
 }

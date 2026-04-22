@@ -16,6 +16,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:omi/backend/http/api/users.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/env/env.dart';
+import 'package:omi/services/oidc_auth_service.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/logger.dart';
 
@@ -25,14 +26,28 @@ class AuthService {
 
   AuthService._internal();
 
-  bool isSignedIn() => FirebaseAuth.instance.currentUser != null && !FirebaseAuth.instance.currentUser!.isAnonymous;
+  bool isSignedIn() {
+    if (Env.isOidcAuth) {
+      return OidcAuthService.instance.isSignedInSync();
+    }
+    return FirebaseAuth.instance.currentUser != null && !FirebaseAuth.instance.currentUser!.isAnonymous;
+  }
 
   getFirebaseUser() {
+    if (Env.isOidcAuth) return null;
     return FirebaseAuth.instance.currentUser;
   }
 
   /// Google Sign In using the standard google_sign_in package (iOS, Android)
   Future<UserCredential?> signInWithGoogleMobile() async {
+    if (Env.isOidcAuth) {
+      // OIDC flow stores tokens + uid in SharedPreferences and FlutterSecureStorage.
+      // The result is exposed via isSignedIn() / getIdToken(); the legacy
+      // UserCredential return type stays null since Firebase isn't involved.
+      // Caller (auth_provider.dart) checks Env.isOidcAuth + isSignedIn().
+      await OidcAuthService.instance.signInWithBrowser(loginHintProvider: 'google');
+      return null;
+    }
     print('DEBUG_AUTH: Using standard Google Sign In for mobile');
 
     // Trigger the authentication flow
@@ -85,6 +100,10 @@ class AuthService {
   }
 
   Future<UserCredential?> signInWithAppleMobile() async {
+    if (Env.isOidcAuth) {
+      await OidcAuthService.instance.signInWithBrowser(loginHintProvider: 'apple');
+      return null;
+    }
     try {
       // Sign out the current user first
       Logger.debug('Signing out current user...');
@@ -154,6 +173,10 @@ class AuthService {
 
   Future<void> signOut() async {
     _clearCachedAuth();
+    if (Env.isOidcAuth) {
+      await OidcAuthService.instance.signOut();
+      return;
+    }
     await FirebaseAuth.instance.signOut();
   }
 
@@ -163,6 +186,11 @@ class AuthService {
   }
 
   Future<String?> getIdToken() async {
+    if (Env.isOidcAuth) {
+      // Refresh-aware fetch from FlutterSecureStorage; falls back to /oauth/token
+      // refresh_token grant if expired. Returns null if no session exists.
+      return OidcAuthService.instance.getIdToken();
+    }
     try {
       if (FirebaseAuth.instance.currentUser == null) {
         Logger.debug('getIdToken: currentUser is null, clearing cached token');
