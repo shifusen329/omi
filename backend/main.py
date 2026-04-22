@@ -66,7 +66,13 @@ log_langsmith_status()
 # Validate Stripe price IDs so misconfigured plans fail loud
 validate_stripe_price_ids()
 
-if os.environ.get('SERVICE_ACCOUNT_JSON'):
+# Firebase Admin is only required for the Firebase Auth token-verification path
+# and for `auth.get_user` / `auth.delete_user` helpers. When AUTH_PROVIDER=oidc
+# is active, the self-host OIDC verifier handles JWTs and there are no creds
+# available in the container — skip init so the app boots without Firebase.
+if os.environ.get('AUTH_PROVIDER', '').lower() == 'oidc':
+    logging.info("AUTH_PROVIDER=oidc — skipping firebase_admin init (Firebase Auth not used)")
+elif os.environ.get('SERVICE_ACCOUNT_JSON'):
     service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
     credentials = firebase_admin.credentials.Certificate(service_account_info)
     firebase_admin.initialize_app(credentials)
@@ -142,6 +148,14 @@ app.add_middleware(BYOKMiddleware)
 @app.on_event("shutdown")
 async def shutdown_event():
     await close_all_clients()
+
+
+@app.get("/health", include_in_schema=False)
+@app.get("/v1/health", include_in_schema=False)
+def health():
+    """Unauthenticated liveness probe. Used by the mobile connectivity service,
+    nginx upstream checks, and docker-compose healthcheck."""
+    return {"status": "ok"}
 
 
 paths = ['_temp', '_samples', '_segments', '_speech_profiles']

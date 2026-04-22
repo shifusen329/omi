@@ -58,8 +58,10 @@ COPY backend/models/ ./models/
 COPY backend/routers/ ./routers/
 COPY backend/utils/ ./utils/
 COPY backend/pusher/ ./pusher/
-# CI writes google-credentials.json to backend/ before build (gcp_backend_pusher.yml)
-COPY backend/google-credentials.json ./google-credentials.json
+# CI writes google-credentials.json to backend/ before build (gcp_backend_pusher.yml).
+# For self-host (AUTH_PROVIDER=oidc, STORAGE_BACKEND=minio), the file isn't used —
+# the wildcard + `.env.template` keeps the COPY valid even when creds are absent.
+COPY backend/google-credentials.json* backend/.env.template ./
 
 EXPOSE 8080
 CMD ["uvicorn", "pusher.main:app", "--host", "0.0.0.0", "--port", "8080", "--ws-ping-interval", "20", "--ws-ping-timeout", "20", "--loop", "uvloop"]

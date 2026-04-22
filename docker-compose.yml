@@ -1,0 +1,125 @@
+# Self-host Omi docker-compose.
+#
+# - `backend` binds to 127.0.0.1:8002 to match /etc/nginx/sites-available/omi.conf.
+# - `network_mode: host` is used so the containers can reach the other
+#   infrastructure services already running on this box — pgvector @
+#   localhost:5432, MongoDB rs0 @ localhost:27017, and LAN services on the
+#   192.168.0.x subnet (Redis, MinIO, Ollama, LiteLLM, local Whisper). Host
+#   networking avoids the gymnastics needed to make "localhost" inside a
+#   bridged container resolve to the docker host, and keeps the MongoDB
+#   replica-set client from getting confused by mismatched hostnames.
+# - `pusher` runs privately on 127.0.0.1:8003. The backend reaches it via
+#   HOSTED_PUSHER_API_URL in backend/.env.
+# - `agent-proxy` and `diarizer` are left disabled by default. Uncomment the
+#   blocks below when you deploy those services.
+#
+# Bring up:
+#   cd <worktree> && docker compose up -d --build
+#
+# Logs:
+#   docker compose logs -f backend pusher
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: omi-backend:selfhost
+    container_name: omi-backend
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ./backend/.env
+    # Override the Dockerfile CMD so it binds to 8002 (matches nginx omi.conf).
+    command:
+      - uvicorn
+      - main:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8002"
+      - --loop
+      - uvloop
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  pusher:
+    build:
+      context: .
+      dockerfile: backend/pusher/Dockerfile
+    image: omi-pusher:selfhost
+    container_name: omi-pusher
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ./backend/.env
+    command:
+      - uvicorn
+      - pusher.main:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8003"
+      - --ws-ping-interval
+      - "20"
+      - --ws-ping-timeout
+      - "20"
+      - --loop
+      - uvloop
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # --- Optional services ---
+  #
+  # Agent proxy (AI chat WS). Only needed if you want the chat tab to connect.
+  # The mobile app tolerates this being absent (nginx returns 502; app skips
+  # the preconnect). Uncomment and set AGENT_PROXY_* env in backend/.env.
+  #
+  # agent-proxy:
+  #   build:
+  #     context: .
+  #     dockerfile: backend/agent-proxy/Dockerfile
+  #   image: omi-agent-proxy:selfhost
+  #   container_name: omi-agent-proxy
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   env_file:
+  #     - ./backend/.env
+  #   command:
+  #     - uvicorn
+  #     - main:app
+  #     - --host
+  #     - 127.0.0.1
+  #     - --port
+  #     - "8082"
+  #     - --loop
+  #     - uvloop
+  #
+  # Diarizer (speaker embeddings). Requires an NVIDIA GPU + the NVIDIA
+  # container toolkit for CUDA. Leave commented on CPU-only hosts; speaker
+  # identification falls back to SPEAKER_0 placeholders.
+  #
+  # diarizer:
+  #   build:
+  #     context: ./backend/diarizer
+  #     dockerfile: Dockerfile
+  #   image: omi-diarizer:selfhost
+  #   container_name: omi-diarizer
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   env_file:
+  #     - ./backend/.env
