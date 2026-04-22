@@ -21,11 +21,24 @@ headers = {"Authorization": f"Token {os.getenv('DEEPGRAM_API_KEY')}", "Content-T
 
 class STTService(str, Enum):
     deepgram = "deepgram"
+    local_whisper = "local_whisper"
 
     @staticmethod
     def get_model_name(value):
         if value == STTService.deepgram:
             return 'deepgram_streaming'
+        if value == STTService.local_whisper:
+            return 'local_whisper_streaming'
+
+
+def get_active_stt_service() -> STTService:
+    """Returns the configured STT service from env (default: deepgram)."""
+    raw = os.getenv('STT_SERVICE', 'deepgram').strip().lower()
+    try:
+        return STTService(raw)
+    except ValueError:
+        logger.warning('Unknown STT_SERVICE=%r, falling back to deepgram', raw)
+        return STTService.deepgram
 
 
 deepgram_nova3_multi_languages = {
@@ -140,6 +153,13 @@ deepgram_nova3_languages = {
 
 
 def get_stt_service_for_language(language: str, multi_lang_enabled: bool = True):
+    if get_active_stt_service() == STTService.local_whisper:
+        # Whisper is multilingual (99 langs). Pass the app's requested language
+        # through directly; the local server ignores the `multi` pseudo-code.
+        model = os.getenv('STT_WS_MODEL', 'turbo')
+        lang = language if language and language != 'multi' else 'en'
+        return STTService.local_whisper, lang, model
+
     if multi_lang_enabled and language in deepgram_nova3_multi_languages:
         return STTService.deepgram, 'multi', 'nova-3'
     if language in deepgram_nova3_languages:
@@ -171,6 +191,83 @@ deepgram = DeepgramClient(os.getenv('DEEPGRAM_API_KEY'), deepgram_options)
 deepgram_beta = DeepgramClient(os.getenv('DEEPGRAM_API_KEY'), deepgram_cloud_options)
 
 
+async def _process_audio_local_whisper(
+    stream_transcript,
+    language: str,
+    sample_rate: int,
+    channels: int,
+    model: str,
+    vad_gate=None,
+):
+    """Open a LocalWhisperSocket and translate server Results into Omi segments.
+
+    The local server emits finalized Results frames on endpointing-triggered
+    silence. Each frame has the whole utterance transcript but no per-word
+    timestamps or speaker IDs, so we emit a single segment per frame with
+    SPEAKER_0 as a placeholder — the downstream speaker-identification pass
+    (diarizer) re-labels it.
+    """
+    from utils.stt.local_ws_streaming import connect_local_whisper
+
+    logger.info(
+        'local_whisper_ws language=%s sample_rate=%s channels=%s model=%s',
+        language,
+        sample_rate,
+        channels,
+        model,
+    )
+
+    if vad_gate is not None:
+        _original_stream_transcript = stream_transcript
+
+        def stream_transcript(segments):  # noqa: F811 — matches DG path
+            vad_gate.remap_segments(segments)
+            _original_stream_transcript(segments)
+
+    def on_message(self, result, **_kwargs):
+        sentence = result.channel.alternatives[0].transcript or ''
+        if not sentence.strip():
+            return
+        start = float(getattr(result, 'start', 0.0))
+        duration = float(getattr(result, 'duration', 0.0))
+        end = start + max(duration, 0.0)
+        # Single segment; speaker_id is a placeholder until the diarizer relabels.
+        segments = [
+            {
+                'speaker': 'SPEAKER_0',
+                'start': start,
+                'end': end,
+                'text': sentence,
+                'is_user': False,
+                'person_id': None,
+            }
+        ]
+        stream_transcript(segments)
+
+    def on_error(self, err, **_kwargs):
+        logger.warning('local_whisper error frame: %s', err)
+
+    def on_close(sock, info):
+        logger.info('local_whisper closed; death_reason=%s', sock.death_reason)
+
+    # Run the sync connect off the event loop so we don't block it.
+    sock = await asyncio.to_thread(
+        connect_local_whisper,
+        on_message,
+        on_error,
+        on_close,
+        language,
+        sample_rate,
+        model,
+    )
+    if sock is None:
+        return None
+
+    if vad_gate is not None:
+        return GatedDeepgramSocket(sock, gate=vad_gate)
+    return sock
+
+
 async def process_audio_dg(
     stream_transcript,
     language: str,
@@ -181,13 +278,22 @@ async def process_audio_dg(
     vad_gate=None,
     is_active: Optional[Callable[[], bool]] = None,
 ):
-    """Create a Deepgram streaming connection.
+    """Create a streaming STT connection.
 
-    Args:
-        vad_gate: Optional VADStreamingGate. If provided, returns a
-            GatedDeepgramSocket that handles VAD gating internally and
-            remaps timestamps in the stream_transcript callback.
+    Dispatches by STT_SERVICE env var: Deepgram SaaS (default) or the local
+    Whisper WebSocket (`STT_SERVICE=local_whisper`). Returns a socket that
+    duck-types SafeDeepgramSocket.
     """
+    if get_active_stt_service() == STTService.local_whisper:
+        return await _process_audio_local_whisper(
+            stream_transcript=stream_transcript,
+            language=language,
+            sample_rate=sample_rate,
+            channels=channels,
+            model=model,
+            vad_gate=vad_gate,
+        )
+
     logger.info(f'process_audio_dg {language} {sample_rate} {channels}')
 
     # If gate provided, wrap stream_transcript to remap DG timestamps

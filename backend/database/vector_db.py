@@ -4,18 +4,29 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import List
 
-from pinecone import Pinecone
-
-from utils.llm.clients import embeddings
 import logging
 
 logger = logging.getLogger(__name__)
 
-if os.getenv('PINECONE_API_KEY') is not None:
-    pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY', ''))
-    index = pc.Index(os.getenv('PINECONE_INDEX_NAME', ''))
-else:
+# Self-host: pgvector replaces Pinecone. Every public function defined below is
+# overridden by `from database.pgvector_db import *` at module-load end, so
+# existing `from database.vector_db import upsert_vector` sites transparently
+# pick up the pgvector implementation.
+_USE_PGVECTOR = os.getenv('VECTOR_DB', '').lower() == 'pgvector'
+
+if _USE_PGVECTOR:
+    pc = None
     index = None
+else:
+    from pinecone import Pinecone
+
+    from utils.llm.clients import embeddings
+
+    if os.getenv('PINECONE_API_KEY') is not None:
+        pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY', ''))
+        index = pc.Index(os.getenv('PINECONE_INDEX_NAME', ''))
+    else:
+        index = None
 
 
 def _get_data(uid: str, conversation_id: str, vector: List[float]):
@@ -387,3 +398,31 @@ def delete_screen_activity_vectors(uid: str, ids: List[int]):
         return
     vector_ids = [f'{uid}-sa-{sid}' for sid in ids]
     index.delete(ids=vector_ids, namespace=SCREEN_ACTIVITY_NAMESPACE)
+
+
+# When VECTOR_DB=pgvector is set, override every Pinecone-backed function above
+# with the pgvector implementation. Keeping this at the bottom means the Pinecone
+# code is still valid Python (can be reached by flipping the flag and rolling
+# back), but the module-level bindings used by callers route through pgvector.
+if _USE_PGVECTOR:
+    from database.pgvector_db import (  # noqa: E402
+        upsert_vector,
+        upsert_vector2,
+        upsert_vectors,
+        update_vector_metadata,
+        query_vectors,
+        query_vectors_by_metadata,
+        delete_vector,
+        upsert_memory_vector,
+        upsert_memory_vectors_batch,
+        find_similar_memories,
+        check_memory_duplicate,
+        search_memories_by_vector,
+        delete_memory_vector,
+        upsert_screen_activity_vectors,
+        search_screen_activity_vectors,
+        delete_screen_activity_vectors,
+        MEMORIES_NAMESPACE,
+        SCREEN_ACTIVITY_NAMESPACE,
+    )
+    logger.info('vector_db: pgvector backend active')

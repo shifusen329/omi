@@ -31,7 +31,14 @@ OPUS_FRAME_SIZE = OPUS_SAMPLE_RATE * OPUS_FRAME_DURATION_MS // 1000  # 320 sampl
 # Valid private cloud sync extensions (longest first for correct matching)
 PRIVATE_CLOUD_EXTENSIONS = ['.batch.enc', '.batch.bin', '.opus.enc', '.opus', '.enc', '.bin']
 
-if os.environ.get('SERVICE_ACCOUNT_JSON'):
+if os.environ.get('STORAGE_BACKEND', '').lower() == 'minio':
+    # Self-host: MinIO (S3-compatible) via a duck-typed shim that matches the
+    # google.cloud.storage.Client surface used below. Zero call-site changes.
+    from utils.other.minio_storage import MinioStorageClient
+
+    storage_client = MinioStorageClient()
+    logger.info('storage: using MinIO backend (endpoint=%s)', os.environ.get('MINIO_ENDPOINT'))
+elif os.environ.get('SERVICE_ACCOUNT_JSON'):
     service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
     credentials = service_account.Credentials.from_service_account_info(service_account_info)
     storage_client = storage.Client(credentials=credentials)

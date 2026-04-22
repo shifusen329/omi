@@ -12,11 +12,67 @@ import tiktoken
 
 from models.structured import Structured
 from utils.byok import get_byok_key
+from utils.llm.stella_embeddings import StellaEmbeddings
 from utils.llm.usage_tracker import get_usage_callback
 
 logger = logging.getLogger(__name__)
 
 _usage_callback = get_usage_callback()
+
+
+# Self-host default routing — every ChatOpenAI(...) construction in this module
+# merges in `base_url` + `api_key` from env when they're set, pointing the OpenAI
+# SDK at the LiteLLM proxy. If unset, behaviour is unchanged (SaaS OpenAI).
+_OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL') or None
+_OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') or None
+
+
+def _openai_defaults() -> Dict[str, Any]:
+    """ChatOpenAI kwargs to inject so all calls route through the configured endpoint."""
+    kw: Dict[str, Any] = {}
+    if _OPENAI_BASE_URL:
+        kw['base_url'] = _OPENAI_BASE_URL
+    if _OPENAI_API_KEY:
+        kw['api_key'] = _OPENAI_API_KEY
+    return kw
+
+
+# When OPENAI_BASE_URL points at a proxy (LiteLLM) that publishes a different
+# set of model IDs than OpenAI SaaS, map legacy names to what the proxy serves.
+# Map is a no-op when _OPENAI_BASE_URL is unset.
+_LITELLM_MODEL_ALIASES: Dict[str, str] = {
+    # Legacy OpenAI names that predate gpt-5.4
+    'gpt-5.1': 'gpt-5.4',
+    'gpt-5.2': 'gpt-5.4',
+    'o1-preview': 'gpt-5.4',
+    'o4-mini': 'gpt-5.4-mini',
+    # Anthropic: dashes -> periods on LiteLLM and latest-rev rollups
+    'claude-sonnet-4-6': 'claude-sonnet-4.6',
+    'claude-sonnet-4-20250514': 'claude-sonnet-4.6',
+    'claude-opus-4-6': 'claude-opus-4.6',
+    'claude-opus-4-6-20250414': 'claude-opus-4.6',
+    'claude-haiku-3.5': 'claude-haiku-4.5',
+    'claude-haiku-4-5': 'claude-haiku-4.5',
+    # Gemini on OpenRouter -> LiteLLM-direct names
+    'google/gemini-flash-1.5-8b': 'gemini-3.1-flash-lite',
+    'gemini-flash-1.5-8b': 'gemini-3.1-flash-lite',
+    'google/gemini-3-flash-preview': 'gemini-3-flash',
+    'google/gemini-2.5-flash': 'gemini-2.5-flash',
+    # Anthropic-on-OpenRouter -> LiteLLM-direct
+    'anthropic/claude-3.5-sonnet': 'claude-sonnet-4.6',
+    # Perplexity is not on the local LiteLLM; web_search tool is stubbed instead.
+    'sonar-pro': 'gemini-3-flash',
+}
+
+
+def _resolve_model(model: str) -> str:
+    """Remap legacy model IDs to what the configured proxy publishes.
+
+    No-op when OPENAI_BASE_URL is unset (i.e. when running against SaaS OpenAI).
+    """
+    if not _OPENAI_BASE_URL:
+        return model
+    return _LITELLM_MODEL_ALIASES.get(model, model)
 
 # ---------------------------------------------------------------------------
 # BYOK routing proxies
@@ -155,10 +211,14 @@ def _hash_key(api_key: str) -> str:
 
 
 def _cached_openai_chat(model: str, api_key: str, ctor_kwargs: Dict[str, Any]) -> ChatOpenAI:
-    cache_key = f"{model}:{_hash_key(api_key)}:{hash(frozenset((k, repr(v)) for k, v in ctor_kwargs.items()))}"
+    resolved = _resolve_model(model)
+    cache_key = f"{resolved}:{_hash_key(api_key)}:{hash(frozenset((k, repr(v)) for k, v in ctor_kwargs.items()))}"
     inst = _openai_cache.get(cache_key)
     if inst is None:
-        inst = ChatOpenAI(model=model, api_key=api_key, **ctor_kwargs)
+        merged = {**_openai_defaults(), **ctor_kwargs}
+        # BYOK api_key wins over the self-host default.
+        merged['api_key'] = api_key
+        inst = ChatOpenAI(model=resolved, **merged)
         _openai_cache[cache_key] = inst
     return inst
 
@@ -174,13 +234,42 @@ def _cached_anthropic(api_key: str) -> anthropic.AsyncAnthropic:
 
 def _byok_openai(model: str, **ctor_kwargs) -> _OpenAIChatProxy:
     """Build a module-level ChatOpenAI that transparently routes to BYOK if set."""
-    default = ChatOpenAI(model=model, **ctor_kwargs)
-    return _OpenAIChatProxy(model=model, default=default, ctor_kwargs=ctor_kwargs)
+    resolved = _resolve_model(model)
+    merged = {**_openai_defaults(), **ctor_kwargs}
+    default = ChatOpenAI(model=resolved, **merged)
+    # Cache constructor kwargs without our defaults — BYOK rebuild should re-merge
+    # via `_cached_openai_chat`, not inherit the self-host base_url.
+    return _OpenAIChatProxy(model=resolved, default=default, ctor_kwargs=ctor_kwargs)
 
 
-# Anthropic client for chat agent (module-level, BYOK-aware)
-_default_anthropic_client = anthropic.AsyncAnthropic()  # uses ANTHROPIC_API_KEY env var
-anthropic_client = _AnthropicClientProxy(_default_anthropic_client)
+# Anthropic client for chat agent (module-level, BYOK-aware).
+# Construction is lazy so missing ANTHROPIC_API_KEY doesn't break import —
+# matters for self-host where users may route /v1/messages through LiteLLM
+# with ANTHROPIC_BASE_URL pointing at the proxy.
+_default_anthropic_client: Optional[anthropic.AsyncAnthropic] = None
+
+
+def _ensure_default_anthropic() -> anthropic.AsyncAnthropic:
+    global _default_anthropic_client
+    if _default_anthropic_client is None:
+        # AsyncAnthropic() reads ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL from env.
+        # When self-host points ANTHROPIC_BASE_URL at LiteLLM, the SDK hits the
+        # proxy's /v1/messages endpoint transparently.
+        _default_anthropic_client = anthropic.AsyncAnthropic()
+    return _default_anthropic_client
+
+
+class _LazyAnthropicProxy(_AnthropicClientProxy):
+    __slots__ = ()
+
+    def _resolve(self) -> anthropic.AsyncAnthropic:  # type: ignore[override]
+        byok = get_byok_key('anthropic')
+        if byok:
+            return _cached_anthropic(byok)
+        return _ensure_default_anthropic()
+
+
+anthropic_client = _LazyAnthropicProxy(None)  # default resolved lazily  # type: ignore[arg-type]
 
 
 def get_anthropic_client() -> anthropic.AsyncAnthropic:
@@ -193,7 +282,8 @@ def get_openai_chat(model: str, **kwargs) -> ChatOpenAI:
     byok = get_byok_key('openai')
     if byok:
         return _cached_openai_chat(model, byok, kwargs)
-    return ChatOpenAI(model=model, **kwargs)
+    merged = {**_openai_defaults(), **kwargs}
+    return ChatOpenAI(model=_resolve_model(model), **merged)
 
 
 # ---------------------------------------------------------------------------
@@ -405,27 +495,39 @@ def _get_or_create_openai_llm(model_name: str, streaming: bool = False) -> _Open
 def _get_or_create_openrouter_llm(
     model_name: str, streaming: bool = False, temperature: Optional[float] = None
 ) -> ChatOpenAI:
-    """Get or create a ChatOpenAI instance for an OpenRouter model."""
+    """Get or create a ChatOpenAI instance for an OpenRouter-slotted feature.
+
+    When OPENAI_BASE_URL is configured (self-host), the model name is remapped
+    via _LITELLM_MODEL_ALIASES and the call routes through LiteLLM instead of
+    OpenRouter. Falls back to OpenRouter when no self-host URL is set.
+    """
     key = (model_name, streaming, 'openrouter', temperature)
     if key not in _llm_cache:
-        kwargs: Dict[str, Any] = {
-            'api_key': os.environ.get('OPENROUTER_API_KEY'),
-            'base_url': "https://openrouter.ai/api/v1",
-            'default_headers': {"X-Title": "Omi Chat"},
-            'callbacks': [_usage_callback],
-        }
+        resolved = _resolve_model(model_name)
+        if _OPENAI_BASE_URL:
+            kwargs: Dict[str, Any] = {
+                **_openai_defaults(),
+                'callbacks': [_usage_callback],
+            }
+        else:
+            kwargs = {
+                'api_key': os.environ.get('OPENROUTER_API_KEY'),
+                'base_url': "https://openrouter.ai/api/v1",
+                'default_headers': {"X-Title": "Omi Chat"},
+                'callbacks': [_usage_callback],
+            }
         if temperature is not None:
             kwargs['temperature'] = temperature
         if streaming:
             kwargs['streaming'] = True
             kwargs['stream_options'] = {"include_usage": True}
         # For Gemini models on OpenRouter, use proxy for BYOK Gemini routing
-        if model_name.startswith('google/gemini'):
+        if model_name.startswith('google/gemini') and not _OPENAI_BASE_URL:
             direct_model = model_name.split('/', 1)[1]
             default = ChatOpenAI(model=model_name, **kwargs)
             _llm_cache[key] = _OpenRouterGeminiProxy(default=default, direct_model=direct_model, ctor_kwargs=kwargs)
         else:
-            _llm_cache[key] = ChatOpenAI(model=model_name, **kwargs)
+            _llm_cache[key] = ChatOpenAI(model=resolved, **kwargs)
     return _llm_cache[key]
 
 
@@ -504,10 +606,13 @@ for _feat, _model in sorted(_active_profile.items()):
 
 
 # ---------------------------------------------------------------------------
-# Anthropic — model resolved from active QoS profile
+# Anthropic — model resolved from active QoS profile. When ANTHROPIC_BASE_URL
+# is pointed at LiteLLM, the proxy publishes claude model IDs with periods
+# (claude-sonnet-4.6) rather than dashes (claude-sonnet-4-6). `_resolve_model`
+# normalizes those so the SDK sends the right identifier.
 # ---------------------------------------------------------------------------
-ANTHROPIC_AGENT_MODEL = get_model('chat_agent')
-ANTHROPIC_AGENT_COMPLEX_MODEL = get_model('chat_agent')
+ANTHROPIC_AGENT_MODEL = _resolve_model(get_model('chat_agent'))
+ANTHROPIC_AGENT_COMPLEX_MODEL = _resolve_model(get_model('chat_agent'))
 
 
 # ---------------------------------------------------------------------------
@@ -578,13 +683,20 @@ _persona_mini_kwargs = dict(
     stream_options={"include_usage": True},
     callbacks=[_usage_callback],
 )
-_persona_mini_default = ChatOpenAI(
-    model="google/gemini-flash-1.5-8b",
-    api_key=os.environ.get('OPENROUTER_API_KEY'),
-    base_url="https://openrouter.ai/api/v1",
-    default_headers={"X-Title": "Omi Chat"},
-    **_persona_mini_kwargs,
-)
+if _OPENAI_BASE_URL:
+    _persona_mini_default = ChatOpenAI(
+        model=_resolve_model("google/gemini-flash-1.5-8b"),
+        **_openai_defaults(),
+        **_persona_mini_kwargs,
+    )
+else:
+    _persona_mini_default = ChatOpenAI(
+        model="google/gemini-flash-1.5-8b",
+        api_key=os.environ.get('OPENROUTER_API_KEY'),
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={"X-Title": "Omi Chat"},
+        **_persona_mini_kwargs,
+    )
 # BYOK Gemini → route direct to Google's OpenAI-compat endpoint.
 # Model name drops the `google/` prefix: gemini-flash-1.5-8b on Google direct.
 llm_persona_mini_stream = _OpenRouterGeminiProxy(
@@ -601,13 +713,20 @@ _persona_medium_kwargs = dict(
     stream_options={"include_usage": True},
     callbacks=[_usage_callback],
 )
-_persona_medium_default = ChatOpenAI(
-    model="anthropic/claude-3.5-sonnet",
-    api_key=os.environ.get('OPENROUTER_API_KEY'),
-    base_url="https://openrouter.ai/api/v1",
-    default_headers={"X-Title": "Omi Chat"},
-    **_persona_medium_kwargs,
-)
+if _OPENAI_BASE_URL:
+    _persona_medium_default = ChatOpenAI(
+        model=_resolve_model("anthropic/claude-3.5-sonnet"),
+        **_openai_defaults(),
+        **_persona_medium_kwargs,
+    )
+else:
+    _persona_medium_default = ChatOpenAI(
+        model="anthropic/claude-3.5-sonnet",
+        api_key=os.environ.get('OPENROUTER_API_KEY'),
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={"X-Title": "Omi Chat"},
+        **_persona_medium_kwargs,
+    )
 
 
 class _AnthropicViaOpenAIProxy:
@@ -649,13 +768,20 @@ _gemini_flash_kwargs = dict(
     temperature=0.7,
     callbacks=[_usage_callback],
 )
-_gemini_flash_default = ChatOpenAI(
-    model="google/gemini-3-flash-preview",
-    api_key=os.environ.get('OPENROUTER_API_KEY'),
-    base_url="https://openrouter.ai/api/v1",
-    default_headers={"X-Title": "Omi Wrapped"},
-    **_gemini_flash_kwargs,
-)
+if _OPENAI_BASE_URL:
+    _gemini_flash_default = ChatOpenAI(
+        model=_resolve_model("google/gemini-3-flash-preview"),
+        **_openai_defaults(),
+        **_gemini_flash_kwargs,
+    )
+else:
+    _gemini_flash_default = ChatOpenAI(
+        model="google/gemini-3-flash-preview",
+        api_key=os.environ.get('OPENROUTER_API_KEY'),
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={"X-Title": "Omi Wrapped"},
+        **_gemini_flash_kwargs,
+    )
 llm_gemini_flash = _OpenRouterGeminiProxy(
     default=_gemini_flash_default,
     direct_model="gemini-3-flash-preview",
@@ -665,12 +791,23 @@ llm_gemini_flash = _OpenRouterGeminiProxy(
 # ---------------------------------------------------------------------------
 # Embeddings, parser, utilities
 # ---------------------------------------------------------------------------
-_embeddings_default = OpenAIEmbeddings(model="text-embedding-3-large")
-embeddings = _OpenAIEmbeddingsProxy(
-    model="text-embedding-3-large",
-    default=_embeddings_default,
-    ctor_kwargs={},
-)
+# When OLLAMA_BASE_URL is set, use the local Stella model (1536-dim) via the
+# Ollama /api/embed endpoint. Otherwise fall back to SaaS OpenAI embeddings.
+# The `embeddings` object exposes embed_query / embed_documents (and async
+# variants) — the full surface used by the codebase.
+if os.environ.get('OLLAMA_BASE_URL'):
+    embeddings = StellaEmbeddings(
+        base_url=os.environ['OLLAMA_BASE_URL'],
+        model=os.environ.get('EMBEDDINGS_MODEL', 'stella_en_1.5B_v5:latest'),
+    )
+    _embeddings_default = embeddings  # kept for any legacy reference path
+else:
+    _embeddings_default = OpenAIEmbeddings(model="text-embedding-3-large")
+    embeddings = _OpenAIEmbeddingsProxy(
+        model="text-embedding-3-large",
+        default=_embeddings_default,
+        ctor_kwargs={},
+    )
 parser = PydanticOutputParser(pydantic_object=Structured)
 
 encoding = tiktoken.encoding_for_model('gpt-4')

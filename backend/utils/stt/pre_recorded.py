@@ -4,6 +4,7 @@ from io import BytesIO
 from typing import List, Optional, Sequence, Tuple, Union
 
 import fal_client
+import httpx
 from deepgram import DeepgramClient, DeepgramClientOptions
 
 from models.transcript_segment import TranscriptSegment
@@ -12,6 +13,116 @@ from utils.other.endpoints import timeit
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# Self-host configuration: when STT_SERVICE=local_whisper is set, batch
+# transcription requests are routed to the OpenAI-compatible /v1/audio/transcriptions
+# endpoint on the local STT server instead of Deepgram's REST API.
+_LOCAL_BATCH_URL = os.getenv('STT_BATCH_URL', 'http://192.168.0.107:8000/v1/audio/transcriptions')
+_LOCAL_BATCH_MODEL = os.getenv('STT_BATCH_MODEL', 'large-v3')
+
+
+def _is_local_whisper() -> bool:
+    return os.getenv('STT_SERVICE', 'deepgram').strip().lower() == 'local_whisper'
+
+
+def _local_whisper_post(
+    audio_bytes: bytes,
+    mime: str,
+    language: Optional[str],
+    model: Optional[str] = None,
+) -> dict:
+    files = {'file': ('audio' + ('.wav' if mime == 'audio/wav' else '.raw'), audio_bytes, mime)}
+    data = {
+        'model': model or _LOCAL_BATCH_MODEL,
+        'response_format': 'verbose_json',
+    }
+    if language and language != 'multi':
+        data['language'] = language
+    with httpx.Client(timeout=120.0) as client:
+        r = client.post(_LOCAL_BATCH_URL, data=data, files=files)
+        r.raise_for_status()
+        return r.json()
+
+
+def _local_whisper_prerecorded_from_bytes(
+    audio_bytes: bytes,
+    encoding: Optional[str],
+    language: Optional[str],
+    return_language: bool,
+) -> Union[List[dict], Tuple[List[dict], str]]:
+    mime = 'audio/wav' if not encoding else 'audio/raw'
+    try:
+        result = _local_whisper_post(audio_bytes, mime=mime, language=language)
+    except Exception as e:
+        logger.error('local_whisper batch from_bytes error: %s', e)
+        if return_language:
+            return [], language or 'en'
+        return []
+    words = _segments_to_word_dicts(result.get('segments') or [])
+    if return_language:
+        detected = result.get('language') or language or 'en'
+        if isinstance(detected, str) and '-' in detected:
+            detected = detected.split('-')[0]
+        return words, detected
+    return words
+
+
+def _local_whisper_prerecorded_from_url(
+    audio_url: str,
+    language: Optional[str],
+    return_language: bool,
+) -> Union[List[dict], Tuple[List[dict], str]]:
+    # Download the audio, then post bytes. Keeps one implementation path.
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            r = client.get(audio_url)
+            r.raise_for_status()
+            audio_bytes = r.content
+    except Exception as e:
+        logger.error('local_whisper fetch %s failed: %s', audio_url, e)
+        if return_language:
+            return [], language or 'en'
+        return []
+    return _local_whisper_prerecorded_from_bytes(
+        audio_bytes=audio_bytes,
+        encoding=None,
+        language=language,
+        return_language=return_language,
+    )
+
+
+def _segments_to_word_dicts(segments: List[dict], speaker_label: str = 'SPEAKER_00') -> List[dict]:
+    """
+    Whisper batch returns segment-level timestamps but no per-word timing. Split
+    each segment's text on whitespace and distribute time linearly across it so
+    downstream code that expects word-level dicts (timestamp + text + speaker)
+    stays happy. This is an approximation — timestamps are only accurate to the
+    segment boundary.
+    """
+    out: List[dict] = []
+    for seg in segments:
+        text = (seg.get('text') or '').strip()
+        if not text:
+            continue
+        start = float(seg.get('start') or 0.0)
+        end = float(seg.get('end') or (start + 1.0))
+        words = text.split()
+        if not words:
+            continue
+        span = max(end - start, 0.01)
+        per = span / len(words)
+        for i, w in enumerate(words):
+            ws = start + i * per
+            we = ws + per
+            out.append(
+                {
+                    'timestamp': [ws, we],
+                    'speaker': speaker_label,
+                    'text': w,
+                }
+            )
+    return out
 
 # Initialize Deepgram client for pre-recorded transcription
 # WARN: the pre-recorded transcription is available on deepgram cloud
@@ -169,6 +280,11 @@ def deepgram_prerecorded(
     """
     logger.info(f'deepgram_prerecorded {audio_url} {speakers_count} {attempts}')
 
+    if _is_local_whisper():
+        return _local_whisper_prerecorded_from_url(
+            audio_url=audio_url, language=language, return_language=return_language
+        )
+
     try:
         # 'multi' language means auto-detection
         is_multi = language == 'multi'
@@ -288,6 +404,14 @@ def deepgram_prerecorded_from_bytes(
     logger.info(
         f'deepgram_prerecorded_from_bytes bytes_len={len(audio_bytes)} {sample_rate} {diarize} {attempts} encoding={encoding} language={language} model={model}'
     )
+
+    if _is_local_whisper():
+        return _local_whisper_prerecorded_from_bytes(
+            audio_bytes=audio_bytes,
+            encoding=encoding,
+            language=language,
+            return_language=return_language,
+        )
 
     try:
         is_multi = language == 'multi'

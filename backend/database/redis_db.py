@@ -9,11 +9,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_redis_password = os.getenv('REDIS_DB_PASSWORD') or None
 r = redis.Redis(
     host=os.getenv('REDIS_DB_HOST'),
     port=int(os.getenv('REDIS_DB_PORT')) if os.getenv('REDIS_DB_PORT') is not None else 6379,
-    username='default',
-    password=os.getenv('REDIS_DB_PASSWORD'),
+    username='default' if _redis_password else None,
+    password=_redis_password,
     health_check_interval=30,
 )
 
