@@ -1,10 +1,11 @@
-import 'package:flutter/foundation.dart';
+// File named crashlytics_manager.dart for backward compat with `PlatformManager`
+// references. The implementation routes through Sentry now — Firebase Crashlytics
+// has been removed.
 import 'package:flutter/material.dart';
 
-import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 import 'package:omi/utils/debugging/crash_reporter.dart';
-import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/platform/platform_service.dart';
 
 class CrashlyticsManager implements CrashReporter {
@@ -17,80 +18,100 @@ class CrashlyticsManager implements CrashReporter {
     return _instance;
   }
 
-  static Future<void> init() async {
-    // Disable Crashlytics collection in debug mode
-    if (kDebugMode) {
-      await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(false);
-    } else {
-      await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
-    }
-  }
+  /// Kept as a no-op so existing `await CrashlyticsManager.init()` callers
+  /// don't have to change. Sentry init happens in `main.dart`.
+  static Future<void> init() async {}
 
   @override
   void identifyUser(String email, String name, String userId) {
-    PlatformService.executeIfSupported(true, () async {
-      await FirebaseCrashlytics.instance.setUserIdentifier(userId);
-      if (email.isNotEmpty) {
-        await FirebaseCrashlytics.instance.setCustomKey('user_email', email);
-      }
-      if (name.isNotEmpty) {
-        await FirebaseCrashlytics.instance.setCustomKey('user_name', name);
-      }
+    PlatformService.executeIfSupported(true, () {
+      Sentry.configureScope((scope) {
+        scope.setUser(SentryUser(
+          id: userId.isEmpty ? null : userId,
+          email: email.isEmpty ? null : email,
+          username: name.isEmpty ? null : name,
+        ));
+      });
     });
   }
 
   @override
   void logInfo(String message) {
-    PlatformService.executeIfSupported(true, () => FirebaseCrashlytics.instance.log(message));
+    PlatformService.executeIfSupported(
+      true,
+      () => Sentry.addBreadcrumb(Breadcrumb(message: message, level: SentryLevel.info)),
+    );
   }
 
   @override
   void logError(String message) {
-    PlatformService.executeIfSupported(true, () => FirebaseCrashlytics.instance.log('ERROR: $message'));
+    PlatformService.executeIfSupported(
+      true,
+      () => Sentry.addBreadcrumb(Breadcrumb(message: message, level: SentryLevel.error)),
+    );
   }
 
   @override
   void logWarn(String message) {
-    PlatformService.executeIfSupported(true, () => FirebaseCrashlytics.instance.log('WARN: $message'));
+    PlatformService.executeIfSupported(
+      true,
+      () => Sentry.addBreadcrumb(Breadcrumb(message: message, level: SentryLevel.warning)),
+    );
   }
 
   @override
   void logDebug(String message) {
-    PlatformService.executeIfSupported(true, () => FirebaseCrashlytics.instance.log('DEBUG: $message'));
+    PlatformService.executeIfSupported(
+      true,
+      () => Sentry.addBreadcrumb(Breadcrumb(message: message, level: SentryLevel.debug)),
+    );
   }
 
   @override
   void logVerbose(String message) {
-    PlatformService.executeIfSupported(true, () => FirebaseCrashlytics.instance.log('VERBOSE: $message'));
+    PlatformService.executeIfSupported(
+      true,
+      () => Sentry.addBreadcrumb(Breadcrumb(message: message, level: SentryLevel.debug)),
+    );
   }
 
   @override
   void setUserAttribute(String key, String value) {
-    PlatformService.executeIfSupported(true, () => FirebaseCrashlytics.instance.setCustomKey(key, value));
+    PlatformService.executeIfSupported(
+      true,
+      () => Sentry.configureScope((scope) => scope.setTag(key, value)),
+    );
   }
 
+  /// Sentry has no global on/off switch analogous to Crashlytics collection.
+  /// We keep the signature but treat it as a no-op; disabling is done by not
+  /// calling SentryFlutter.init (i.e., leaving SENTRY_DSN empty in env).
   @override
-  void setEnabled(bool isEnabled) {
-    PlatformService.executeIfSupported(true, () async {
-      await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(isEnabled);
-    });
-  }
+  void setEnabled(bool isEnabled) {}
 
   @override
   Future<void> reportCrash(Object exception, StackTrace stackTrace, {Map<String, String>? userAttributes}) async {
     await PlatformService.executeIfSupportedAsync(true, () async {
-      if (userAttributes != null) {
-        for (final entry in userAttributes.entries) {
-          await FirebaseCrashlytics.instance.setCustomKey(entry.key, entry.value);
-        }
-      }
-      await FirebaseCrashlytics.instance.recordError(exception, stackTrace);
+      await Sentry.captureException(
+        exception,
+        stackTrace: stackTrace,
+        withScope: (scope) {
+          if (userAttributes != null) {
+            for (final entry in userAttributes.entries) {
+              scope.setTag(entry.key, entry.value);
+            }
+          }
+        },
+      );
     });
   }
 
   @override
   NavigatorObserver? getNavigatorObserver() {
-    return null;
+    // SentryNavigatorObserver captures route changes as breadcrumbs and
+    // performance transactions. Install it in the app's navigator observers
+    // list (see MyApp MaterialApp / Navigator configuration).
+    return SentryNavigatorObserver();
   }
 
   @override

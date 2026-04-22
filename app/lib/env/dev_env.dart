@@ -83,4 +83,16 @@ final class DevEnv implements EnvFields {
   @override
   @EnviedField(varName: 'OIDC_SCOPES', obfuscate: false, defaultValue: 'openid email profile')
   final String? oidcScopes = _DevEnv.oidcScopes;
+
+  @override
+  @EnviedField(varName: 'SENTRY_DSN', obfuscate: true, defaultValue: '')
+  final String? sentryDsn = _DevEnv.sentryDsn;
+
+  @override
+  @EnviedField(varName: 'SENTRY_TRACES_SAMPLE_RATE', obfuscate: false, defaultValue: '1.0')
+  final String? sentryTracesSampleRate = _DevEnv.sentryTracesSampleRate;
+
+  @override
+  @EnviedField(varName: 'SENTRY_ENV', obfuscate: false, defaultValue: 'dev')
+  final String? sentryEnv = _DevEnv.sentryEnv;
 }

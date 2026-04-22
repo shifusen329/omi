@@ -103,6 +103,8 @@ pgvector>=0.3
 boto3>=1.34
 # Self-host document store (MongoDB). Only used when DB_BACKEND=mongo.
 pymongo>=4.6
+# Error reporting. Auto-detects FastAPI via StarletteIntegration.
+sentry-sdk[fastapi]>=2.18
 langchain-text-splitters==0.3.11
 langgraph==0.6.10
 langgraph-checkpoint==2.1.2

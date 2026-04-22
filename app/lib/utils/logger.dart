@@ -1,29 +1,36 @@
 import 'package:flutter/material.dart';
 
-import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:intercom_flutter/intercom_flutter.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 
-class CrashlyticsTalkerObserver extends TalkerObserver {
-  CrashlyticsTalkerObserver();
+/// Talker observer that forwards errors/exceptions to Sentry. The SDK is a
+/// no-op when Sentry isn't initialized (no DSN), so this is safe to wire
+/// unconditionally.
+class SentryTalkerObserver extends TalkerObserver {
+  SentryTalkerObserver();
 
   @override
   void onError(err) {
-    FirebaseCrashlytics.instance.recordError(err.error, err.stackTrace, reason: err.message);
+    Sentry.captureException(err.error, stackTrace: err.stackTrace, hint: Hint.withMap({'reason': err.message ?? ''}));
   }
 
   @override
   void onException(err) {
-    FirebaseCrashlytics.instance.recordError(err.exception, err.stackTrace, reason: err.message);
+    Sentry.captureException(
+      err.exception,
+      stackTrace: err.stackTrace,
+      hint: Hint.withMap({'reason': err.message ?? ''}),
+    );
   }
 }
 
 class Logger {
-  final crashlyticsTalkerObserver = CrashlyticsTalkerObserver();
-  late final talker = TalkerFlutter.init(observer: crashlyticsTalkerObserver);
+  final sentryTalkerObserver = SentryTalkerObserver();
+  late final talker = TalkerFlutter.init(observer: sentryTalkerObserver);
 
   Logger._();
 

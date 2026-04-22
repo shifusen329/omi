@@ -8,6 +8,22 @@ load_dotenv()  # No-op if .env doesn't exist (production); loads local dev secre
 
 logging.basicConfig(level=logging.INFO)
 
+import sentry_sdk
+
+# DSN comes from SENTRY_DSN in env (see backend/.env.template). Leave unset to disable.
+_sentry_dsn = os.getenv('SENTRY_DSN')
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        environment=os.getenv('SENTRY_ENV', 'selfhost'),
+        release=os.getenv('SENTRY_RELEASE'),  # None = let Sentry auto-detect from git
+        traces_sample_rate=float(os.getenv('SENTRY_TRACES_SAMPLE_RATE', '0.1')),
+        profiles_sample_rate=float(os.getenv('SENTRY_PROFILES_SAMPLE_RATE', '0')),
+        # Request headers + IP. Log sanitizer is still responsible for stripping
+        # secrets via before_send hooks in utils.log_sanitizer if you wire them.
+        send_default_pii=True,
+    )
+
 import firebase_admin
 from fastapi import FastAPI
 

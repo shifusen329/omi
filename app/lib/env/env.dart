@@ -110,6 +110,24 @@ abstract class Env {
           .split(RegExp(r'\s+'))
           .where((s) => s.isNotEmpty)
           .toList();
+
+  // ----- Sentry -----
+
+  /// DSN for the mobile Sentry project. Leave unset to disable Sentry entirely
+  /// (useful for dev builds).
+  static String? get sentryDsn {
+    final v = _instance.sentryDsn;
+    if (v == null || v.isEmpty) return null;
+    return v;
+  }
+
+  static double get sentryTracesSampleRate {
+    final v = _instance.sentryTracesSampleRate;
+    if (v == null || v.isEmpty) return 0.1;
+    return double.tryParse(v) ?? 0.1;
+  }
+
+  static String get sentryEnv => _instance.sentryEnv ?? 'selfhost';
 }
 
 abstract class EnvFields {
@@ -151,4 +169,11 @@ abstract class EnvFields {
   String? get oidcRedirectUri;
 
   String? get oidcScopes;
+
+  // Sentry (optional; null disables)
+  String? get sentryDsn;
+
+  String? get sentryTracesSampleRate;
+
+  String? get sentryEnv;
 }

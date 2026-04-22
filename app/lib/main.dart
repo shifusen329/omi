@@ -11,7 +11,6 @@ import 'package:marionette_flutter/marionette_flutter.dart';
 import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as ble;
 import 'package:omi/gen/pigeon_communicator.g.dart';
@@ -79,6 +78,7 @@ import 'package:omi/utils/environment_detector.dart';
 import 'package:omi/pages/settings/developer.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 /// Background message handler for FCM data messages
 @pragma('vm:entry-point')
@@ -202,12 +202,15 @@ Future _init() async {
       SharedPreferencesUtil().uid,
     );
   }
+  // Route uncaught Flutter + PlatformDispatcher errors through Sentry. When
+  // SENTRY_DSN is unset, SentryFlutter.init is skipped (see `main()` below)
+  // and these calls degrade to no-ops inside the SDK.
   FlutterError.onError = (FlutterErrorDetails details) {
-    FirebaseCrashlytics.instance.recordFlutterFatalError(details);
+    Sentry.captureException(details.exception, stackTrace: details.stack);
   };
 
   PlatformDispatcher.instance.onError = (error, stack) {
-    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+    Sentry.captureException(error, stackTrace: stack);
     return true;
   };
 
@@ -215,17 +218,32 @@ Future _init() async {
   return;
 }
 
-void main() {
+Future<void> main() async {
   runZonedGuarded(() async {
-    // Ensure
     if (kDebugMode) {
       MarionetteBinding.ensureInitialized();
     } else {
       WidgetsFlutterBinding.ensureInitialized();
     }
     await _init();
-    runApp(const MyApp());
-  }, (error, stack) => FirebaseCrashlytics.instance.recordError(error, stack, fatal: true));
+
+    // Initialize Sentry only when a DSN is configured. Unset SENTRY_DSN to
+    // disable telemetry entirely (dev-without-network, tests, etc.).
+    final sentryDsn = Env.sentryDsn;
+    if (sentryDsn != null && sentryDsn.isNotEmpty) {
+      await SentryFlutter.init(
+        (options) {
+          options.dsn = sentryDsn;
+          options.environment = Env.sentryEnv;
+          options.tracesSampleRate = Env.sentryTracesSampleRate;
+          options.sendDefaultPii = true;
+        },
+        appRunner: () => runApp(SentryWidget(child: const MyApp())),
+      );
+    } else {
+      runApp(const MyApp());
+    }
+  }, (error, stack) => Sentry.captureException(error, stackTrace: stack));
 }
 
 class MyApp extends StatefulWidget {

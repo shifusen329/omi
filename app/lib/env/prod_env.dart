@@ -83,4 +83,16 @@ final class ProdEnv implements EnvFields {
   @override
   @EnviedField(varName: 'OIDC_SCOPES', obfuscate: false, defaultValue: 'openid email profile')
   final String? oidcScopes = _ProdEnv.oidcScopes;
+
+  @override
+  @EnviedField(varName: 'SENTRY_DSN', obfuscate: true, defaultValue: '')
+  final String? sentryDsn = _ProdEnv.sentryDsn;
+
+  @override
+  @EnviedField(varName: 'SENTRY_TRACES_SAMPLE_RATE', obfuscate: false, defaultValue: '0.1')
+  final String? sentryTracesSampleRate = _ProdEnv.sentryTracesSampleRate;
+
+  @override
+  @EnviedField(varName: 'SENTRY_ENV', obfuscate: false, defaultValue: 'selfhost')
+  final String? sentryEnv = _ProdEnv.sentryEnv;
 }
